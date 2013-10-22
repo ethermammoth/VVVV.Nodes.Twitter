@@ -74,11 +74,8 @@ namespace VVVV.TwitterApi.Nodes
         [Output("Twitter Name", IsSingle = true)]
         ISpread<string> FUserName;
 
-        [Output("Access Token", IsSingle = true)]
-        ISpread<string> FAccessToken;
-
-        [Output("Access Token Secret", IsSingle = true)]
-        ISpread<string> FAccessTokenSecret;
+        [Output("Usage Limit", IsSingle = true)]
+        ISpread<string> FUseLimit;
 
         [Output("Status", IsSingle = true)]
         ISpread<string> FStatus;
@@ -90,7 +87,7 @@ namespace VVVV.TwitterApi.Nodes
         TwitterService service;
         OAuthRequestToken requestToken;
         OAuthAccessToken accessToken;
-        TwitterRateLimitStatusSummary rate;
+        TwitterRateLimitStatus rate;
 
         private bool appAuthed = false;
         private bool appAuthFailed = false;
@@ -155,6 +152,11 @@ namespace VVVV.TwitterApi.Nodes
                 }
             }
 
+            if (userAuthed && rate != null)
+            {
+                FUseLimit[0] = rate.RemainingHits.ToString() + " / " + rate.HourlyLimit.ToString() + " reset in: " + rate.ResetTime.ToString();
+            }
+
             if (FLogout[0] && userAuthed)
             {
                 userAuthed = false;
@@ -184,6 +186,7 @@ namespace VVVV.TwitterApi.Nodes
                 Uri uri = service.GetAuthorizationUri(requestToken);
                 FRequestUrl[0] = uri.ToString();
                 waitingForPin = true;
+                rate = action.RateLimitStatus;
             }
             else
             {
@@ -197,13 +200,12 @@ namespace VVVV.TwitterApi.Nodes
             {
                 accessToken = token;
                 service.AuthenticateWith(accessToken.Token, accessToken.TokenSecret);
-                FAccessToken[0] = accessToken.Token;
-                FAccessTokenSecret[0] = accessToken.TokenSecret;
                 FUserId[0] = accessToken.UserId;
                 FUserName[0] = accessToken.ScreenName;
                 FStatus[0] = "Twitter: Auth Success!";
                 waitingForPin = false;
                 userAuthed = true;
+                rate = action.RateLimitStatus;
             }
             else
             {
@@ -222,7 +224,10 @@ namespace VVVV.TwitterApi.Nodes
             if (action.StatusCode == HttpStatusCode.OK)
             {
                 FStatus[0] = "Twitter: Current Token is Valid and Verified! - " + action.StatusDescription;
+                FUserId[0] = (int)user.Id;
+                FUserName[0] = user.Name;
                 userAuthed = true;
+                rate = action.RateLimitStatus;
             }
             else if (action.StatusCode == HttpStatusCode.Unauthorized)
             {
@@ -246,6 +251,7 @@ namespace VVVV.TwitterApi.Nodes
             if (action.StatusCode == HttpStatusCode.OK)
             {
                 FStatus[0] = "Twitter: Normal Tweet sended!";
+                rate = action.RateLimitStatus;
             }
             else if (action.StatusCode == HttpStatusCode.Unauthorized)
             {
@@ -264,6 +270,7 @@ namespace VVVV.TwitterApi.Nodes
             if (action.StatusCode == HttpStatusCode.OK)
             {
                 FStatus[0] = "Twitter: Media Tweet sended!";
+                rate = action.RateLimitStatus;
             }
             else if (action.StatusCode == HttpStatusCode.Unauthorized)
             {
