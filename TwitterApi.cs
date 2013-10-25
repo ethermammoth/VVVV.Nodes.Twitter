@@ -1,4 +1,7 @@
 ﻿using System;
+using System.Threading;
+using System.Runtime.Remoting.Messaging;
+
 using System.Net;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,17 +24,20 @@ namespace VVVV.TwitterApi.Nodes
                 Tags = "twitter",
                 Help = "Provides access to twitter through TweetSharp API",
                 AutoEvaluate = true)]
-    public class TwitterApi : IPluginEvaluate
+    public class TwitterApiAsync : IPluginEvaluate
     {
 
         //INPUT
+        [Input("Auth App", IsBang = true, IsSingle = true)]
+        ISpread<bool> FAuthApp;
+
         [Input("Auth User", IsBang = true, IsSingle = true)]
         ISpread<bool> FAuthUser;
 
         [Input("Token Verifier", IsSingle = true)]
         ISpread<string> FTokenVerifier;
 
-        [Input("Token Verifier Entered", IsSingle=true, IsBang=true)]
+        [Input("Token Verifier Entered", IsSingle = true, IsBang = true)]
         ISpread<bool> FTokenVerifierEntered;
 
         [Input("Access Token", IsSingle = true)]
@@ -77,99 +83,198 @@ namespace VVVV.TwitterApi.Nodes
         [Output("Usage Limit", IsSingle = true)]
         ISpread<string> FUseLimit;
 
+        [Output("Access Token", IsSingle = true)]
+        ISpread<string> FAccessToken;
+
+        [Output("Access Token Secret", IsSingle = true)]
+        ISpread<string> FAccessTokenSecret;
+
+        [Output("Require User Auth", IsSingle = true)]
+        ISpread<bool> FNeedUserAuth;
+
+        [Output("Is Authed", IsSingle = true)]
+        ISpread<bool> FIsAuthed;
+
+        [Output("Is Logged In", IsSingle = true)]
+        ISpread<bool> FIsLoggedIn;
+
         [Output("Status", IsSingle = true)]
         ISpread<string> FStatus;
 
         [Import()]
         ILogger FLogger;
 
-        //Twitter Objects
-        TwitterService service;
-        OAuthRequestToken requestToken;
-        OAuthAccessToken accessToken;
-        TwitterRateLimitStatus rate;
-
-        private bool appAuthed = false;
-        private bool appAuthFailed = false;
-        private bool waitingForPin = false;
-        private bool userAuthed = false;
+        Tvvvvitter twit = new Tvvvvitter();
 
         public void Evaluate(int SpreadMax)
         {
-            if (!appAuthed && !appAuthFailed)
+            if (FAuthApp[0])
             {
-                appAuthed = AuthApp(FConsumerKey[0], FConsumerSecret[0]);
-                if (appAuthed)
+                AuthAppAsync auth = new AuthAppAsync(twit.AuthApp);
+                IAsyncResult result = auth.BeginInvoke(FConsumerKey[0], 
+                    FConsumerSecret[0], new AsyncCallback(AppAuthCallBack), null);
+            }
+
+            if (FAuthUser[0])
+            {
+                GetRequestTokenAsync request = new GetRequestTokenAsync(twit.GetRequestToken);
+                IAsyncResult result = request.BeginInvoke(new AsyncCallback(GetRequestTokenCallBack), null);
+            }
+
+            if (FTokenVerifierEntered[0])
+            {
+                GetAccessTokenAsync access = new GetAccessTokenAsync(twit.GetAccessToken);
+                IAsyncResult result = access.BeginInvoke(FTokenVerifier[0],
+                    new AsyncCallback(GetAccessTokenCallBack), null);
+            }
+
+            if (FVerifyToken[0])
+            {
+                VerifyCredentialsAsync cred = new VerifyCredentialsAsync(twit.VerifyCredentials);
+                IAsyncResult result = cred.BeginInvoke(FAccessTokenInput[0], 
+                    FAccessTokenSecretInput[0], new AsyncCallback(VerifyCredentialsCallBack), null);
+            }
+
+            if (FSendTweet[0])
+            {
+                if (FTweetMessage[0].Length > 0)
                 {
-                    FStatus[0] = "Twitter: App Auth Success!";
+                    SendTweetAsync tweet = new SendTweetAsync(twit.SendTweet);
+                    IAsyncResult result = tweet.BeginInvoke(FTweetMessage[0],
+                        new AsyncCallback(SendTweetCallBack), null);
                 }
                 else
                 {
-                    appAuthFailed = true;
-                    FStatus[0] = "Twitter Error: Trying to auth App, maybe Consumer or Consumer secret are wrong?!";
+                    FLogger.Log(LogType.Error, "Twitter error: No Text Message Entered!");
                 }
             }
 
-            if (FAuthUser[0] && appAuthed)
+            if (FSendImageTweet[0])
             {
-                service.GetRequestToken(GetRequestTokenAsyncResult); //NOT ASYNC!
-            }
-
-            if (waitingForPin && FTokenVerifierEntered[0])
-            {
-                service.GetAccessToken(requestToken, FTokenVerifier[0], GetAccessTokenAsyncResult); //NOT ASYNC!
-            }
-
-            if (appAuthed && FVerifyToken[0])
-            {
-                VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
-                service.AuthenticateWith(FAccessTokenInput[0], FAccessTokenSecretInput[0]);
-                IAsyncResult result = service.VerifyCredentials(opt, VerifyCredentialsAsyncResult);
-            }
-
-            if (FSendTweet[0] && userAuthed)
-            {
-                SendTweetOptions tweetOpts = new SendTweetOptions();
-                tweetOpts.Status = FTweetMessage[0];
-                IAsyncResult result = service.SendTweet(tweetOpts, SendTweetAsyncResult);
-            }
-
-            if (FSendImageTweet[0] && userAuthed)
-            {
-                if (File.Exists(FTweetImage[0]))
+                if (FTweetMessage[0].Length > 0 && File.Exists(FTweetImage[0]))
                 {
-                    using (var stream = new FileStream(FTweetImage[0], FileMode.Open))
-                    {
-                        SendTweetWithMediaOptions tweetOpts = new SendTweetWithMediaOptions();
-                        tweetOpts.Status = FTweetMessage[0];
-                        tweetOpts.Images = new Dictionary<string, Stream> { { "image", stream } };
-                        service.SendTweetWithMedia(tweetOpts);
-                    }
+                    SendImageTweetAsync tweet = new SendImageTweetAsync(twit.SendImageTweet);
+                    IAsyncResult result = tweet.BeginInvoke(FTweetMessage[0], FTweetImage[0],
+                        new AsyncCallback(SendImageTweetCallBack), null);
                 }
                 else
                 {
-                    FStatus[0] = "Twitter Error: Image file does not exist!";
+                    FLogger.Log(LogType.Error, "Twitter error: No Text Message Entered or File path not valid!");
                 }
             }
 
-            if (userAuthed && rate != null)
+            if (FLogout[0])
             {
-                FUseLimit[0] = rate.RemainingHits.ToString() + " / " + rate.HourlyLimit.ToString() + " reset in: " + rate.ResetTime.ToString();
+                twit.Logout();
             }
 
-            if (FLogout[0] && userAuthed)
+            //update all
+            if (twit != null)
             {
-                userAuthed = false;
-                waitingForPin = false;
-                appAuthed = false;
+                FIsAuthed[0] = twit.appAuthed;
+                FIsLoggedIn[0] = twit.hasValidToken;
+                FUserId[0] = twit.userId;
+                FUserName[0] = twit.userName;
+                FRequestUrl[0] = twit.requestUrl;
+                FNeedUserAuth[0] = twit.requireUserAuth;
+                FStatus[0] = twit.statusCode;
+                FUseLimit[0] = twit.rateStatus;
+                FAccessToken[0] = twit.accessToken;
+                FAccessTokenSecret[0] = twit.accessTokenSecret;
+                if (twit.tweetSended)
+                {
+                    FLogger.Log(LogType.Message, "Twitter: Tweet Sended!");
+                    twit.tweetSended = false;
+                }
             }
+
         }
 
-        private bool AuthApp(string consumer, string secret)
+        private void AppAuthCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            AuthAppAsync caller = (AuthAppAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+
+        private void VerifyCredentialsCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            VerifyCredentialsAsync caller = (VerifyCredentialsAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+
+        private void GetRequestTokenCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            GetRequestTokenAsync caller = (GetRequestTokenAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+
+        private void GetAccessTokenCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            GetAccessTokenAsync caller = (GetAccessTokenAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+
+        private void SendTweetCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            SendTweetAsync caller = (SendTweetAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+
+        private void SendImageTweetCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            SendImageTweetAsync caller = (SendImageTweetAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+    }
+
+
+    public class Tvvvvitter
+    {
+        //Twitter Objects
+        private TwitterService service;
+        public string requestToken { get; private set; }
+        public string requestTokenSecret { get; private set; }
+        public string accessToken { get; private set; }
+        public string accessTokenSecret { get; private set; }
+        public bool requireUserAuth { get; private set; }
+        public bool appAuthed { get; private set; }
+        public bool hasValidToken { get; private set; }
+        public string userName { get; private set; }
+        public int userId { get; private set; }
+        public string requestUrl { get; private set; }
+        public string statusCode { get; private set; }
+        public string rateStatus { get; private set; }
+
+        public bool tweetSended;
+
+        public Tvvvvitter()
+        {
+            appAuthed = false;
+            hasValidToken = false;
+            userId = 0;
+            userName = "";
+            requestUrl = "";
+            statusCode = "";
+            rateStatus = "";
+            requestToken = "";
+            requestTokenSecret = "";
+            accessToken = ""; 
+            accessTokenSecret = "";
+            tweetSended = false;
+        }
+
+        public bool AuthApp(string consumer, string secret)
         {
             if (consumer.Length > 2 && secret.Length > 2)
             {
                 service = new TwitterService(consumer, secret);
+                appAuthed = true;
                 return true;
             }
             else
@@ -178,104 +283,194 @@ namespace VVVV.TwitterApi.Nodes
             }
         }
 
-        private void GetRequestTokenAsyncResult(OAuthRequestToken token, TwitterResponse action)
+        public bool VerifyCredentials(string accessToken, string accessSecret)
         {
-            if (action.StatusCode == HttpStatusCode.OK)
+            if (!appAuthed)
+                return false;
+
+            service.AuthenticateWith(accessToken, accessSecret);
+            
+            VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
+            TwitterUser usr = service.VerifyCredentials(opt);
+
+            if (usr != null)
             {
-                requestToken = token;
-                Uri uri = service.GetAuthorizationUri(requestToken);
-                FRequestUrl[0] = uri.ToString();
-                waitingForPin = true;
-                rate = action.RateLimitStatus;
+                userName = usr.Name;
+                userId = (int)usr.Id;
+                hasValidToken = true;
+                return true;
             }
-            else
-            {
-                FStatus[0] = "Twitter Error: Getting request token!";
-            }
+
+            return false;
         }
 
-        private void GetAccessTokenAsyncResult(OAuthAccessToken token, TwitterResponse action)
+        public bool GetRequestToken()
         {
-            if (action.StatusCode == HttpStatusCode.OK)
+            if (!appAuthed)
+                return false;
+
+            OAuthRequestToken rt = new OAuthRequestToken();
+            try
             {
-                accessToken = token;
-                service.AuthenticateWith(accessToken.Token, accessToken.TokenSecret);
-                FUserId[0] = accessToken.UserId;
-                FUserName[0] = accessToken.ScreenName;
-                FStatus[0] = "Twitter: Auth Success!";
-                waitingForPin = false;
-                userAuthed = true;
-                rate = action.RateLimitStatus;
+                rt = service.GetRequestToken();
+                requestToken = rt.Token;
+                requestTokenSecret = rt.TokenSecret;
             }
-            else
+            catch (Exception error)
             {
-                FStatus[0] = "Twitter Error: Getting access token!";
+                statusCode = error.Message;
             }
+
+            Uri uri = service.GetAuthorizationUri(rt);
+
+            if (requestToken != null && uri != null)
+            {
+                requestUrl = uri.ToString();
+                requireUserAuth = true;
+                return true;
+            }
+            return false;
         }
 
-        private void VerifyCredentialsAsyncResult(TwitterUser user, TwitterResponse action)
+        public bool GetAccessToken(string verifier)
         {
-            TwitterError error = action.Error;
-            if (error != null)
+            if (!requireUserAuth || !appAuthed)
+                return false;
+
+            OAuthRequestToken rt = new OAuthRequestToken();
+            OAuthAccessToken at = new OAuthAccessToken();
+            rt.Token = requestToken;
+            rt.TokenSecret = requestTokenSecret;
+            try
             {
-                FStatus[0] = error.Message;
+                at = service.GetAccessToken(rt, verifier);
+                accessToken = at.Token;
+                accessTokenSecret = at.TokenSecret;
+            }
+            catch (Exception error)
+            {
+                statusCode = error.Message;
+                return false;
             }
 
-            if (action.StatusCode == HttpStatusCode.OK)
+            if (accessToken != null)
             {
-                FStatus[0] = "Twitter: Current Token is Valid and Verified! - " + action.StatusDescription;
-                FUserId[0] = (int)user.Id;
-                FUserName[0] = user.Name;
-                userAuthed = true;
-                rate = action.RateLimitStatus;
+                service.AuthenticateWith(accessToken, accessTokenSecret);
+               
+                VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
+                TwitterUser usr = service.VerifyCredentials(opt);
+
+                if (usr != null)
+                {
+                    userName = usr.Name;
+                    userId = (int)usr.Id;
+                    hasValidToken = true;
+                    requireUserAuth = false;
+                    requestUrl = "";
+                    return true;
+                }
             }
-            else if (action.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                FStatus[0] = "Twitter Error: Current Token is not valid! - " + action.StatusDescription;
-            }
-            else
-            {
-                //some other error
-                FStatus[0] = "Twitter Error: General error verifying token! - " + action.StatusDescription;
-            }
+            return false;
         }
 
-        private void SendTweetAsyncResult(TwitterStatus status, TwitterResponse action)
+        public bool SendTweet(string message)
         {
-            TwitterError error = action.Error;
-            if (error != null)
+            if (!hasValidToken)
+                return false;
+
+            SendTweetOptions opt = new SendTweetOptions();
+            opt.Status = message;
+            try
             {
-                FStatus[0] = error.Message;
+                TwitterStatus status = service.SendTweet(opt);
+                if (status != null)
+                {
+                    if (service.Response.StatusCode == HttpStatusCode.OK)
+                    {
+                        statusCode = service.Response.StatusCode.ToString();
+                        rateStatus = service.Response.RateLimitStatus.RemainingHits.ToString();
+                        tweetSended = true;
+                        return true;
+                    }
+
+                    if (service.Response.StatusCode == HttpStatusCode.Unauthorized)
+                    {
+                        NeedAuthentication();
+                        return false;
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                statusCode = error.Message;
             }
 
-            if (action.StatusCode == HttpStatusCode.OK)
-            {
-                FStatus[0] = "Twitter: Normal Tweet sended!";
-                rate = action.RateLimitStatus;
-            }
-            else if (action.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                
-            }
+            return false;
         }
 
-        private void SendTweetWithMediaAsyncResult(TwitterStatus status, TwitterResponse action)
+        public bool SendImageTweet(string message, string path)
         {
-            TwitterError error = action.Error;
-            if (error != null)
-            {
-                FStatus[0] = error.Message;
-            }
+            if (!hasValidToken)
+                return false;
 
-            if (action.StatusCode == HttpStatusCode.OK)
+            using (var stream = new FileStream(path, FileMode.Open))
             {
-                FStatus[0] = "Twitter: Media Tweet sended!";
-                rate = action.RateLimitStatus;
+                SendTweetWithMediaOptions tweetOpts = new SendTweetWithMediaOptions();
+                tweetOpts.Status = message;
+                tweetOpts.Images = new Dictionary<string, Stream> { { "image", stream } };
+                try
+                {
+                    TwitterStatus status = service.SendTweetWithMedia(tweetOpts);
+                    if (status != null)
+                    {
+                        if (service.Response.StatusCode == HttpStatusCode.OK)
+                        {
+                            statusCode = service.Response.StatusCode.ToString();
+                            rateStatus = service.Response.RateLimitStatus.RemainingHits.ToString();
+                            tweetSended = true;
+                            return true;
+                        }
+
+                        if(service.Response.StatusCode == HttpStatusCode.Unauthorized)
+                        {
+                            NeedAuthentication();
+                            return false;
+                        }
+                    }
+                }
+                catch (Exception error)
+                {
+                    statusCode = error.Message;
+                }
             }
-            else if (action.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                FStatus[0] = "Twitter Error: No valid access token!";
-            }
+            return false;
+        }
+
+        public void Logout()
+        {
+            NeedAuthentication();
+        }
+        
+        private void NeedAuthentication()
+        {
+            hasValidToken = false;
+            userId = 0;
+            requestToken = "";
+            requestTokenSecret = "";
+            accessToken = "";
+            accessTokenSecret = "";
+            userName = "";
+            requestUrl = "";
+            statusCode = "";
+            rateStatus = "";
+            tweetSended = false;
         }
     }
+
+    public delegate bool AuthAppAsync(string consumer, string secret);
+    public delegate bool VerifyCredentialsAsync(string accessToken, string accessSecret);
+    public delegate bool GetRequestTokenAsync();
+    public delegate bool GetAccessTokenAsync(string verifier);
+    public delegate bool SendTweetAsync(string message);
+    public delegate bool SendImageTweetAsync(string message, string path);
 }
