@@ -257,6 +257,7 @@ namespace VVVV.TwitterApi.Nodes
         {
             appAuthed = false;
             hasValidToken = false;
+            requireUserAuth = false;
             userId = 0;
             userName = "";
             requestUrl = "";
@@ -454,15 +455,16 @@ namespace VVVV.TwitterApi.Nodes
         private void NeedAuthentication()
         {
             hasValidToken = false;
+            requireUserAuth = false;
             userId = 0;
-            requestToken = "";
-            requestTokenSecret = "";
-            accessToken = "";
-            accessTokenSecret = "";
             userName = "";
             requestUrl = "";
             statusCode = "";
             rateStatus = "";
+            requestToken = "";
+            requestTokenSecret = "";
+            accessToken = "";
+            accessTokenSecret = "";
             tweetSended = false;
         }
     }
