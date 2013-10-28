@@ -34,11 +34,26 @@ namespace VVVV.TwitterApi.Nodes
         [Input("Auth User", IsBang = true, IsSingle = true)]
         ISpread<bool> FAuthUser;
 
+        [Input("Auth Method", IsSingle = true)]
+        ISpread<bool> FAuthMethod;
+
         [Input("Token Verifier", IsSingle = true)]
         ISpread<string> FTokenVerifier;
 
         [Input("Token Verifier Entered", IsSingle = true, IsBang = true)]
         ISpread<bool> FTokenVerifierEntered;
+
+        [Input("Callback URL", IsSingle = true)]
+        ISpread<string> FCallbackUrl;
+
+        [Input("Callback Token", IsSingle = true)]
+        ISpread<string> FCallbackToken;
+
+        [Input("Callback Verifier", IsSingle = true)]
+        ISpread<string> FCallbackVerifier;
+
+        [Input("Callback Entered", IsSingle = true, IsBang = true)]
+        ISpread<bool> FCallbackEntered;
 
         [Input("Access Token", IsSingle = true)]
         ISpread<string> FAccessTokenInput;
@@ -118,14 +133,28 @@ namespace VVVV.TwitterApi.Nodes
             if (FAuthUser[0])
             {
                 GetRequestTokenAsync request = new GetRequestTokenAsync(twit.GetRequestToken);
-                IAsyncResult result = request.BeginInvoke(new AsyncCallback(GetRequestTokenCallBack), null);
+                if (FAuthMethod[0])
+                {
+                    IAsyncResult result = request.BeginInvoke("none", new AsyncCallback(GetRequestTokenCallBack), null);
+                }
+                else
+                {
+                    IAsyncResult result = request.BeginInvoke(FCallbackUrl[0], new AsyncCallback(GetRequestTokenCallBack), null);
+                }
             }
 
-            if (FTokenVerifierEntered[0])
+            if (FTokenVerifierEntered[0] && FAuthMethod[0])
             {
                 GetAccessTokenAsync access = new GetAccessTokenAsync(twit.GetAccessToken);
                 IAsyncResult result = access.BeginInvoke(FTokenVerifier[0],
                     new AsyncCallback(GetAccessTokenCallBack), null);
+            }
+
+            if (FCallbackEntered[0] && !FAuthMethod[0])
+            {
+                GetCallbackAccessTokenAsync access = new GetCallbackAccessTokenAsync(twit.GetCallbackAccessToken);
+                IAsyncResult result = access.BeginInvoke(FCallbackToken[0], FCallbackVerifier[0], 
+                    new AsyncCallback(GetCallbackAccessTokenCallBack), null);
             }
 
             if (FVerifyToken[0])
@@ -218,6 +247,13 @@ namespace VVVV.TwitterApi.Nodes
             bool returnValue = caller.EndInvoke(ar);
         }
 
+        private void GetCallbackAccessTokenCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            GetCallbackAccessTokenAsync caller = (GetCallbackAccessTokenAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+
         private void SendTweetCallBack(IAsyncResult ar)
         {
             AsyncResult result = (AsyncResult)ar;
@@ -288,24 +324,29 @@ namespace VVVV.TwitterApi.Nodes
         {
             if (!appAuthed)
                 return false;
-
-            service.AuthenticateWith(accessToken, accessSecret);
-            
-            VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
-            TwitterUser usr = service.VerifyCredentials(opt);
-
-            if (usr != null)
+            try
             {
-                userName = usr.Name;
-                userId = (int)usr.Id;
-                hasValidToken = true;
-                return true;
+                service.AuthenticateWith(accessToken, accessSecret);
+            
+                VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
+                TwitterUser usr = service.VerifyCredentials(opt);
+                if (usr != null)
+                {
+                    userName = usr.Name;
+                    userId = (int)usr.Id;
+                    hasValidToken = true;
+                    return true;
+                }
+            }
+            catch (Exception error)
+            {
+                statusCode = error.Message;
             }
 
             return false;
         }
 
-        public bool GetRequestToken()
+        public bool GetRequestToken(string callbackUri="none")
         {
             if (!appAuthed)
                 return false;
@@ -313,7 +354,10 @@ namespace VVVV.TwitterApi.Nodes
             OAuthRequestToken rt = new OAuthRequestToken();
             try
             {
-                rt = service.GetRequestToken();
+                if (callbackUri == "none")
+                    rt = service.GetRequestToken();
+                else
+                    rt = service.GetRequestToken(callbackUri);
                 requestToken = rt.Token;
                 requestTokenSecret = rt.TokenSecret;
             }
@@ -329,6 +373,46 @@ namespace VVVV.TwitterApi.Nodes
                 requestUrl = uri.ToString();
                 requireUserAuth = true;
                 return true;
+            }
+            return false;
+        }
+
+        public bool GetCallbackAccessToken(string oauth_token, string oauth_verifier)
+        {
+            if (!requireUserAuth || !appAuthed)
+                return false;
+
+            OAuthRequestToken rt = new OAuthRequestToken { Token = oauth_token }; 
+            OAuthAccessToken at = new OAuthAccessToken();
+
+            try
+            {
+                at = service.GetAccessToken(rt, oauth_verifier);
+                accessToken = at.Token;
+                accessTokenSecret = at.TokenSecret;
+            }
+            catch (Exception error)
+            {
+                statusCode = error.Message;
+                return false;
+            }
+
+            if (accessToken != null)
+            {
+                service.AuthenticateWith(accessToken, accessTokenSecret);
+
+                VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
+                TwitterUser usr = service.VerifyCredentials(opt);
+
+                if (usr != null)
+                {
+                    userName = usr.Name;
+                    userId = (int)usr.Id;
+                    hasValidToken = true;
+                    requireUserAuth = false;
+                    requestUrl = "";
+                    return true;
+                }
             }
             return false;
         }
@@ -471,8 +555,9 @@ namespace VVVV.TwitterApi.Nodes
 
     public delegate bool AuthAppAsync(string consumer, string secret);
     public delegate bool VerifyCredentialsAsync(string accessToken, string accessSecret);
-    public delegate bool GetRequestTokenAsync();
+    public delegate bool GetRequestTokenAsync(string callbackUri = "none");
     public delegate bool GetAccessTokenAsync(string verifier);
     public delegate bool SendTweetAsync(string message);
     public delegate bool SendImageTweetAsync(string message, string path);
+    public delegate bool GetCallbackAccessTokenAsync(string oauth_token, string oauth_verifier);
 }
