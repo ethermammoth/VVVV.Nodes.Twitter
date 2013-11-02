@@ -130,8 +130,9 @@ namespace VVVV.TwitterApi.Nodes
                     FConsumerSecret[0], new AsyncCallback(AppAuthCallBack), null);
             }
 
-            if (FAuthUser[0])
+            if (FAuthUser[0] || twit.tokenWasInvalid)
             {
+                twit.tokenWasInvalid = false;
                 GetRequestTokenAsync request = new GetRequestTokenAsync(twit.GetRequestToken);
                 if (FAuthMethod[0])
                 {
@@ -281,6 +282,7 @@ namespace VVVV.TwitterApi.Nodes
         public bool requireUserAuth { get; private set; }
         public bool appAuthed { get; private set; }
         public bool hasValidToken { get; private set; }
+        public bool tokenWasInvalid { get; set; }
         public string userName { get; private set; }
         public int userId { get; private set; }
         public string requestUrl { get; private set; }
@@ -294,6 +296,7 @@ namespace VVVV.TwitterApi.Nodes
             appAuthed = false;
             hasValidToken = false;
             requireUserAuth = false;
+            tokenWasInvalid = false;
             userId = 0;
             userName = "";
             requestUrl = "";
@@ -310,9 +313,17 @@ namespace VVVV.TwitterApi.Nodes
         {
             if (consumer.Length > 2 && secret.Length > 2)
             {
-                service = new TwitterService(consumer, secret);
-                appAuthed = true;
-                return true;
+                try
+                {
+                    service = new TwitterService(consumer, secret);
+                    appAuthed = true;
+                    return true;
+                }
+                catch (Exception error)
+                {
+                    statusCode = "Auth app error: " + error.Message;
+                    return false;
+                }
             }
             else
             {
@@ -340,7 +351,8 @@ namespace VVVV.TwitterApi.Nodes
             }
             catch (Exception error)
             {
-                statusCode = error.Message;
+                statusCode = "Verify credentials error: " + error.Message;
+                tokenWasInvalid = true;
             }
 
             return false;
@@ -350,29 +362,28 @@ namespace VVVV.TwitterApi.Nodes
         {
             if (!appAuthed)
                 return false;
-
-            OAuthRequestToken rt = new OAuthRequestToken();
             try
             {
+                OAuthRequestToken rt = new OAuthRequestToken();
                 if (callbackUri == "none")
                     rt = service.GetRequestToken();
                 else
                     rt = service.GetRequestToken(callbackUri);
                 requestToken = rt.Token;
                 requestTokenSecret = rt.TokenSecret;
+            
+                Uri uri = service.GetAuthorizationUri(rt);
+
+                if (requestToken != null && uri != null)
+                {
+                    requestUrl = uri.ToString();
+                    requireUserAuth = true;
+                    return true;
+                }
             }
             catch (Exception error)
             {
-                statusCode = error.Message;
-            }
-
-            Uri uri = service.GetAuthorizationUri(rt);
-
-            if (requestToken != null && uri != null)
-            {
-                requestUrl = uri.ToString();
-                requireUserAuth = true;
-                return true;
+                statusCode = "Get request token error: " + error.Message;
             }
             return false;
         }
@@ -390,29 +401,29 @@ namespace VVVV.TwitterApi.Nodes
                 at = service.GetAccessToken(rt, oauth_verifier);
                 accessToken = at.Token;
                 accessTokenSecret = at.TokenSecret;
+
+                if (accessToken != null)
+                {
+                    service.AuthenticateWith(accessToken, accessTokenSecret);
+
+                    VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
+                    TwitterUser usr = service.VerifyCredentials(opt);
+
+                    if (usr != null)
+                    {
+                        userName = usr.Name;
+                        userId = (int)usr.Id;
+                        hasValidToken = true;
+                        requireUserAuth = false;
+                        requestUrl = "";
+                        return true;
+                    }
+                }
             }
             catch (Exception error)
             {
-                statusCode = error.Message;
+                statusCode = "Get callback token error: " + error.Message;
                 return false;
-            }
-
-            if (accessToken != null)
-            {
-                service.AuthenticateWith(accessToken, accessTokenSecret);
-
-                VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
-                TwitterUser usr = service.VerifyCredentials(opt);
-
-                if (usr != null)
-                {
-                    userName = usr.Name;
-                    userId = (int)usr.Id;
-                    hasValidToken = true;
-                    requireUserAuth = false;
-                    requestUrl = "";
-                    return true;
-                }
             }
             return false;
         }
@@ -431,29 +442,29 @@ namespace VVVV.TwitterApi.Nodes
                 at = service.GetAccessToken(rt, verifier);
                 accessToken = at.Token;
                 accessTokenSecret = at.TokenSecret;
+            
+                if (accessToken != null)
+                {
+                    service.AuthenticateWith(accessToken, accessTokenSecret);
+               
+                    VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
+                    TwitterUser usr = service.VerifyCredentials(opt);
+
+                    if (usr != null)
+                    {
+                        userName = usr.Name;
+                        userId = (int)usr.Id;
+                        hasValidToken = true;
+                        requireUserAuth = false;
+                        requestUrl = "";
+                        return true;
+                    }
+                }
             }
             catch (Exception error)
             {
-                statusCode = error.Message;
+                statusCode = "Get access token error: " + error.Message;
                 return false;
-            }
-
-            if (accessToken != null)
-            {
-                service.AuthenticateWith(accessToken, accessTokenSecret);
-               
-                VerifyCredentialsOptions opt = new VerifyCredentialsOptions();
-                TwitterUser usr = service.VerifyCredentials(opt);
-
-                if (usr != null)
-                {
-                    userName = usr.Name;
-                    userId = (int)usr.Id;
-                    hasValidToken = true;
-                    requireUserAuth = false;
-                    requestUrl = "";
-                    return true;
-                }
             }
             return false;
         }
@@ -487,7 +498,7 @@ namespace VVVV.TwitterApi.Nodes
             }
             catch (Exception error)
             {
-                statusCode = error.Message;
+                statusCode = "Send tweet error: " + error.Message;
             }
 
             return false;
@@ -525,7 +536,7 @@ namespace VVVV.TwitterApi.Nodes
                 }
                 catch (Exception error)
                 {
-                    statusCode = error.Message;
+                    statusCode = "Send image tweet error: " + error.Message;
                 }
             }
             return false;
@@ -540,6 +551,7 @@ namespace VVVV.TwitterApi.Nodes
         {
             hasValidToken = false;
             requireUserAuth = false;
+            tokenWasInvalid = false;
             userId = 0;
             userName = "";
             requestUrl = "";
