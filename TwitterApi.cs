@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Threading;
 using System.Runtime.Remoting.Messaging;
-
 using System.Net;
 using System.Collections.Generic;
 using System.Linq;
@@ -76,6 +75,18 @@ namespace VVVV.TwitterApi.Nodes
         [Input("Send Image Tweet", IsSingle = true, IsBang = true)]
         ISpread<bool> FSendImageTweet;
 
+        [Input("Search Hashtag", IsSingle = true)]
+        ISpread<string> FSearchHashtag;
+
+        [Input("Search Count", IsSingle = true)]
+        ISpread<int> FSearchCount;
+
+        [Input("Search", IsSingle = true, IsBang = true)]
+        ISpread<bool> FSearch;
+
+        [Input("Clear Search", IsSingle = true, IsBang = true)]
+        ISpread<bool> FClearSearch;
+
         [Input("Logout", IsSingle = true, IsBang = true)]
         ISpread<bool> FLogout;
 
@@ -103,6 +114,18 @@ namespace VVVV.TwitterApi.Nodes
 
         [Output("Access Token Secret", IsSingle = true)]
         ISpread<string> FAccessTokenSecret;
+
+        [Output("Tweets Id")]
+        ISpread<string> FTweetsId;
+
+        [Output("Tweets Author")]
+        ISpread<string> FTweetsAuthor;
+
+        [Output("Tweets Text")]
+        ISpread<string> FTweetsText;
+
+        [Output("On Search Result", IsSingle = true, IsBang=true)]
+        ISpread<bool> FOnSearchResult;
 
         [Output("Require User Auth", IsSingle = true)]
         ISpread<bool> FNeedUserAuth;
@@ -193,6 +216,22 @@ namespace VVVV.TwitterApi.Nodes
                 }
             }
 
+            if (FSearch[0])
+            {
+                if (!twit.searchInProgress)
+                {
+                    int count = FSearchCount[0];
+                    if (count < 0 || count == 0 || count == null)
+                        count = 10;
+                    string hashtag = FSearchHashtag[0];
+                    if (hashtag == "" || hashtag == null)
+                        hashtag = "vvvv";
+
+                    GetTweetsWithTagAsync search = new GetTweetsWithTagAsync(twit.GetTweetsWithTag);
+                    IAsyncResult result = search.BeginInvoke(hashtag, count, new AsyncCallback(GetTweetsWithTagCallBack), null);                     
+                }
+            }
+
             if (FLogout[0])
             {
                 twit.Logout();
@@ -211,6 +250,35 @@ namespace VVVV.TwitterApi.Nodes
                 FUseLimit[0] = twit.rateStatus;
                 FAccessToken[0] = twit.accessToken;
                 FAccessTokenSecret[0] = twit.accessTokenSecret;
+                FOnSearchResult[0] = false;
+                if (!twit.searchInProgress && twit.gotNewTweets)
+                {
+                    SortedDictionary<long, TwitterStatus> results = twit.GetSearchResult();
+                    int x = 0;
+                    FTweetsId.SliceCount = results.Count;
+                    FTweetsAuthor.SliceCount = results.Count;
+                    FTweetsText.SliceCount = results.Count;
+                    foreach (KeyValuePair<long, TwitterStatus> p in results)
+                    {
+                        FTweetsId[x] = p.Key.ToString();
+                        FTweetsAuthor[x] = p.Value.User.Name;
+                        FTweetsText[x] = p.Value.TextDecoded;
+                        x++;
+                    }
+                    twit.ClearSearchResults();
+                    //FTweetsText[x] = HttpUtility.HtmlDecode(twit.GetTweetArray()[x]);
+                    FOnSearchResult[0] = true;
+                }
+
+                if (!twit.searchInProgress && FClearSearch[0])
+                {
+                    FTweetsId.SliceCount = 0;
+                    FTweetsAuthor.SliceCount = 0;
+                    FTweetsText.SliceCount = 0;
+                    twit.ClearSearchResults();
+                    twit.lastIdSearched = 0;
+                }
+
                 if (twit.tweetSended)
                 {
                     FLogger.Log(LogType.Message, "Twitter: Tweet Sended!");
@@ -219,7 +287,7 @@ namespace VVVV.TwitterApi.Nodes
             }
 
         }
-
+        #region callbacks
         private void AppAuthCallBack(IAsyncResult ar)
         {
             AsyncResult result = (AsyncResult)ar;
@@ -268,6 +336,14 @@ namespace VVVV.TwitterApi.Nodes
             SendImageTweetAsync caller = (SendImageTweetAsync)result.AsyncDelegate;
             bool returnValue = caller.EndInvoke(ar);
         }
+
+        private void GetTweetsWithTagCallBack(IAsyncResult ar)
+        {
+            AsyncResult result = (AsyncResult)ar;
+            GetTweetsWithTagAsync caller = (GetTweetsWithTagAsync)result.AsyncDelegate;
+            bool returnValue = caller.EndInvoke(ar);
+        }
+        #endregion
     }
 
 
@@ -289,10 +365,16 @@ namespace VVVV.TwitterApi.Nodes
         public string statusCode { get; private set; }
         public string rateStatus { get; private set; }
 
+        public bool searchInProgress { get; private set; }
+        public bool gotNewTweets { get; private set; }
+        public long lastIdSearched { get; set; }
+        private SortedDictionary<long, TwitterStatus> twSearch;
+
         public bool tweetSended;
 
         public Tvvvvitter()
         {
+            lastIdSearched = 0;
             appAuthed = false;
             hasValidToken = false;
             requireUserAuth = false;
@@ -307,6 +389,18 @@ namespace VVVV.TwitterApi.Nodes
             accessToken = ""; 
             accessTokenSecret = "";
             tweetSended = false;
+
+            gotNewTweets = false;
+            searchInProgress = false;
+
+            twSearch = new SortedDictionary<long, TwitterStatus>();
+
+        }
+
+        public SortedDictionary<long, TwitterStatus> GetSearchResult()
+        {
+            gotNewTweets = false;
+            return twSearch;
         }
 
         public bool AuthApp(string consumer, string secret)
@@ -542,6 +636,55 @@ namespace VVVV.TwitterApi.Nodes
             return false;
         }
 
+        public bool GetTweetsWithTag(string hashtag, int count)
+        {
+            if (!hasValidToken)
+                return false;
+
+            SearchOptions options = new SearchOptions();
+            options.Q = hashtag;
+            options.Resulttype = TwitterSearchResultType.Recent;
+            options.Count = count;
+            searchInProgress = true;
+            options.SinceId = lastIdSearched;
+
+            try
+            {
+                var searchResult = service.Search(options);
+                if (searchResult != null)
+                {
+                    foreach (var tweet in searchResult.Statuses)
+                    {
+                        twSearch.Add(tweet.Id, tweet);
+                    }
+
+                    if (twSearch.Count > 0)
+                        lastIdSearched = twSearch.Keys.LastOrDefault();
+
+                    gotNewTweets = true;
+                    searchInProgress = false;
+                    return true;
+                }
+                else
+                {
+                    searchInProgress = false;
+                    return false;
+                }
+            }
+            catch (Exception error)
+            {
+                statusCode = "Getting tweets with tag error: " + error.Message;
+            }
+
+            return false;
+        }
+
+        public void ClearSearchResults()
+        {
+            if(!searchInProgress)
+                twSearch.Clear();
+        }
+        
         public void Logout()
         {
             NeedAuthentication();
@@ -549,6 +692,7 @@ namespace VVVV.TwitterApi.Nodes
         
         private void NeedAuthentication()
         {
+            lastIdSearched = 0;
             hasValidToken = false;
             requireUserAuth = false;
             tokenWasInvalid = false;
@@ -562,6 +706,10 @@ namespace VVVV.TwitterApi.Nodes
             accessToken = "";
             accessTokenSecret = "";
             tweetSended = false;
+
+            gotNewTweets = false;
+            searchInProgress = false;
+            ClearSearchResults();
         }
     }
 
@@ -572,4 +720,5 @@ namespace VVVV.TwitterApi.Nodes
     public delegate bool SendTweetAsync(string message);
     public delegate bool SendImageTweetAsync(string message, string path);
     public delegate bool GetCallbackAccessTokenAsync(string oauth_token, string oauth_verifier);
+    public delegate bool GetTweetsWithTagAsync(string hashtag, int count);
 }
