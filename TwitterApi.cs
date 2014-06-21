@@ -121,8 +121,14 @@ namespace VVVV.TwitterApi.Nodes
         [Output("Tweets Author")]
         ISpread<string> FTweetsAuthor;
 
+        [Output("Tweets Author Profile Image")]
+        ISpread<string> FTweetsAuthorImage;
+
         [Output("Tweets Text")]
         ISpread<string> FTweetsText;
+
+        [Output("Tweets Media")]
+        ISpread<string> FTweetsMedia;
 
         [Output("On Search Result", IsSingle = true, IsBang=true)]
         ISpread<bool> FOnSearchResult;
@@ -257,12 +263,20 @@ namespace VVVV.TwitterApi.Nodes
                     int x = 0;
                     FTweetsId.SliceCount = results.Count;
                     FTweetsAuthor.SliceCount = results.Count;
+                    FTweetsAuthorImage.SliceCount = results.Count;
+                    FTweetsMedia.SliceCount = results.Count;
                     FTweetsText.SliceCount = results.Count;
                     foreach (KeyValuePair<long, TwitterStatus> p in results)
                     {
                         FTweetsId[x] = p.Key.ToString();
                         FTweetsAuthor[x] = p.Value.User.Name;
+                        FTweetsAuthorImage[x] = p.Value.User.ProfileImageUrl;
                         FTweetsText[x] = p.Value.TextDecoded;
+                        FTweetsMedia[x] = null;
+                        for (int m = 0; m < p.Value.Entities.Media.Count; m++)
+                        {
+                            FTweetsMedia[x] = p.Value.Entities.Media[m].MediaUrl.ToString();
+                        }
                         x++;
                     }
                     twit.ClearSearchResults();
@@ -274,6 +288,8 @@ namespace VVVV.TwitterApi.Nodes
                 {
                     FTweetsId.SliceCount = 0;
                     FTweetsAuthor.SliceCount = 0;
+                    FTweetsAuthorImage.SliceCount = 0;
+                    FTweetsMedia.SliceCount = 0;
                     FTweetsText.SliceCount = 0;
                     twit.ClearSearchResults();
                     twit.lastIdSearched = 0;
